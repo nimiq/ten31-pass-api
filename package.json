@@ -1,0 +1,31 @@
+{
+  "name": "@nimiq/ten31-pass-api",
+  "version": "0.0.1",
+  "description": "Library for communicating with the TEN31 PASS KYC service",
+  "repository": "git@github.com:nimiq/ten31-pass-api.git",
+  "author": "Nimiq (https://www.nimiq.com)",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.es.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "nimiq",
+    "ten31",
+    "ten31 pass",
+    "kyc",
+    "api"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && rollup --config --configPlugin @rollup/plugin-typescript"
+  },
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^8.3.2",
+    "rollup": "^2.75.6",
+    "tslib": "^2.4.0",
+    "typescript": "^4.7.3"
+  }
+}
