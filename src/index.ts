@@ -27,6 +27,52 @@ enum ResponseStatus {
     Unknown = 'Unknown',
 }
 
+// Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
+// history.replaceState, and also to immediately remove the redirect response artifacts from the url.
+let redirectGrantResponse: GrantResponse | Error | null = null;
+for (let query of [location.search, location.hash]) {
+    query = query.substring(1); // remove query ? or fragment #
+    if (!query) continue;
+    const parsedQuery = new URLSearchParams(query);
+    if (parsedQuery.get('event') !== 'grant-response') continue;
+    const responseStatus = parsedQuery.get('status');
+
+    // Convert redirect response to GrantResponse
+    let appGrant: string | null = null;
+    const serviceGrants: Record<string, string> = {}; // map of service id -> service grant id
+    for (const [key, value] of parsedQuery) {
+        if (key.startsWith('grant-for-app-')) {
+            appGrant = value;
+        } else if (key.startsWith('grant-for-service-')) {
+            serviceGrants[key.replace('grant-for-service-', '')] = value;
+        }
+    }
+
+    if (!responseStatus || (responseStatus === ResponseStatus.Success && !appGrant)) {
+        // should never happen
+        redirectGrantResponse = new Error('TEN31 PASS did not return a valid response.');
+    } else if (responseStatus !== ResponseStatus.Success) {
+        // Different to popup requests, reject on any kind of error because the user can not retry anymore after the
+        // redirect. With the current TEN31 PASS implementation however, redirects are only executed for successful
+        // requests anyways.
+        redirectGrantResponse = new Error(`TEN31 PASS rejected grants with error: ${responseStatus}`, {
+            cause: new Error(responseStatus),
+        });
+    } else {
+        redirectGrantResponse = {
+            app: appGrant!,
+            services: serviceGrants,
+        };
+    }
+
+    // Remove redirect grant response from url; leave all other potential parameters as they are.
+    // Using string replacements instead of parsedQuery.delete and then parsedQuery.toString to avoid format changes of
+    // remaining parameters.
+    history.replaceState(history.state, '', window.location.href.replace(query,
+        query.replace(/(?:event|status|grant-for-(?:app|service)-[^=]+)=[^&]+&?/g, '').replace(/&$/, '')));
+    break;
+}
+
 export class Ten31PassApi {
     private readonly _endpointOrigin: string;
 
@@ -92,5 +138,11 @@ export class Ten31PassApi {
                 reject(new Error('TEN31 PASS popup closed'));
             }, 300);
         });
+    }
+
+    getRedirectGrantResponse(): GrantResponse | null {
+        if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin) return null;
+        if (redirectGrantResponse instanceof Error) throw redirectGrantResponse;
+        return redirectGrantResponse;
     }
 }
