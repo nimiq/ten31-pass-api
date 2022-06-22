@@ -80,6 +80,21 @@ export class Ten31PassApi {
         this._endpointOrigin = new URL(this.enpoint).origin;
     }
 
+    signup(asPopup = true): void {
+        const signupUrl = `${this.enpoint}signup`;
+        if (asPopup) {
+            const popupName = `ten31-pass_${signupUrl}_${Date.now()}`;
+            const popup = window.open(
+                signupUrl,
+                popupName,
+                `left=${window.innerWidth / 2 - 400},top=75,width=800,height=850,location=yes`,
+            );
+            if (!popup) throw new Error('TEN31 PASS popup failed to open.');
+        } else {
+            window.location.assign(signupUrl);
+        }
+    }
+
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: true): Promise<GrantResponse>;
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: false): Promise<void>;
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: boolean): Promise<GrantResponse | void>;
