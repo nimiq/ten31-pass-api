@@ -6,11 +6,13 @@ export enum Endpoint {
     LOCAL = 'http://localhost:8080/',
 }
 
+export type UsageParameters = Record<string, unknown>;
+
 export interface ServiceRequest {
     serviceId: string,
     usages?: Array<{
         usageId: string,
-        parameters?: Record<string, unknown>,
+        parameters?: UsageParameters,
     }>,
 }
 
@@ -19,12 +21,65 @@ export interface GrantResponse {
     services: Record<string, string>,
 }
 
-// Not exposed. Instead, we throw on errors.
+// Not exported. Instead, we throw on errors.
 enum ResponseStatus {
     Success = 'Success',
     Error = 'Error',
     InvalidRequest = 'InvalidRequest',
     Unknown = 'Unknown',
+}
+
+export interface AppInfo {
+    id: string,
+    displayName: string,
+    hasLogo: boolean,
+    redirect: string,
+    fragment: boolean,
+}
+
+export interface ServiceInfo {
+    id: string,
+    displayName: string,
+    hasLogo: boolean,
+    usages: Record</* service usage id */ string, ServiceUsageInfo>
+}
+
+export interface ServiceUsageInfo {
+    id: string,
+    displayName: string,
+    hasLogo: boolean,
+    description?: string | null,
+    fields: string[],
+}
+
+export interface AppGrantInfo {
+    id: string,
+    timestamp: string,
+    app: AppInfo,
+    // note: user is nullable in AppGrantInfo type in the TEN31 PASS code but ensured to be set by getAppGrantInfo
+    user: UserInfo,
+}
+
+export interface UserInfo {
+    id: string,
+    email: string,
+    displayName: string,
+    identifications: [IdentificationInfo?],
+}
+
+export interface IdentificationInfo {
+    provider: string,
+    expiry: string,
+}
+
+export interface ServiceGrantInfo {
+    id: string,
+    timestamp: string,
+    serviceId: string,
+    appId: string,
+    usages: Record<string, UsageParameters>,
+    // note: user is nullable in ServiceGrantInfo type in the TEN31 PASS code but ensured to be set by getServiceGrantInfo
+    user: UserInfo,
 }
 
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
@@ -109,9 +164,9 @@ export class Ten31PassApi {
                     if (usageId in convertedUsages) throw new Error('TEN31 PASS request invalid');
                     convertedUsages[usageId] = parameters || {};
                     return convertedUsages;
-                }, {} as Record</* usage id */ string, /* parameters */ Record<string, unknown>>);
+                }, {} as Record</* usage id */ string, UsageParameters>);
                 return convertedServices;
-            }, {} as Record</*service id*/ string, Record</*usage id*/ string, /*params*/ Record<string, unknown>>>),
+            }, {} as Record</* service id */ string, Record</* usage id */ string, UsageParameters>>),
         };
 
         const popup = postRequest(`${this.enpoint}grants/request`, request, asPopup);
@@ -159,5 +214,32 @@ export class Ten31PassApi {
         if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin) return null;
         if (redirectGrantResponse instanceof Error) throw redirectGrantResponse;
         return redirectGrantResponse;
+    }
+
+    async getAppInfo(appId: string): Promise<AppInfo | null> {
+        return this._fetchData(`api/public/app/${appId}`);
+    }
+
+    async getServiceInfo(serviceId: string): Promise<ServiceInfo | null> {
+        return this._fetchData(`api/public/service/${serviceId}`);
+    }
+
+    async getAppGrantInfo(appGrantId: string): Promise<AppGrantInfo | null> {
+        return this._fetchData(`api/public/grant/app/${appGrantId}`);
+    }
+
+    async getServiceGrantInfo(serviceGrantId: string): Promise<ServiceGrantInfo | null> {
+        return this._fetchData(`api/public/grant/service/${serviceGrantId}`);
+    }
+
+    private async _fetchData(path: string): Promise<any | null> {
+        try {
+            const response = await fetch(this.enpoint + path);
+            if (response.status === 404) return null;
+            if (!response.ok) throw new Error(`${response.status}: ${response.statusText}`);
+            return await response.json();
+        } catch (e: any) {
+            throw new Error(`TEN31 PASS request to ${path} failed: ${e.message}`, { cause: e });
+        }
     }
 }
