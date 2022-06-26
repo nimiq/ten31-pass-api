@@ -77,9 +77,10 @@ export interface ServiceGrantInfo {
     timestamp: string,
     serviceId: string,
     appId: string,
+    token: string,
     usages: Record<string, UsageParameters>,
-    // note: user is nullable in ServiceGrantInfo type in the TEN31 PASS code but ensured to be set by getServiceGrantInfo
-    user: UserInfo,
+    consumption?: Record<string, Record<string, unknown>>,
+    user?: UserInfo,
 }
 
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
@@ -228,13 +229,41 @@ export class Ten31PassApi {
         return this._fetchData(`api/public/grant/app/${appGrantId}`);
     }
 
-    async getServiceGrantInfo(serviceGrantId: string): Promise<ServiceGrantInfo | null> {
-        return this._fetchData(`api/public/grant/service/${serviceGrantId}`);
+    async getServiceGrantInfo(serviceGrantId: string): Promise<Omit<ServiceGrantInfo, 'consumption' | 'user'> | null>
+    async getServiceGrantInfo(serviceGrantId: string, serviceApiKey: string): Promise<ServiceGrantInfo | null>
+    async getServiceGrantInfo(serviceGrantId: string, serviceApiKey?: string)
+        : Promise<ServiceGrantInfo | Omit<ServiceGrantInfo, 'consumption' | 'user'> | null> {
+        return this._fetchData(`api/public/grant/service/${serviceGrantId}`, serviceApiKey);
     }
 
-    private async _fetchData(path: string): Promise<any | null> {
+    async consumeServiceGrant(
+        serviceGrantId: string,
+        usageGrants: Array<{ usageGrantId: string, metadata?: Record<string, unknown> }>,
+        serviceApiKey: string,
+    ): Promise<Required<ServiceGrantInfo> | null> {
+        return this._fetchData(`api/public/grant/service/${serviceGrantId}/consume`, serviceApiKey, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            // convert our more user-friendly request format into ten31's
+            body: JSON.stringify(usageGrants.reduce((convertedUsageGrants, { usageGrantId, metadata }) => {
+                if (usageGrantId in convertedUsageGrants) throw new Error('TEN31 PASS request invalid');
+                convertedUsageGrants[usageGrantId] = metadata || {};
+                return convertedUsageGrants;
+            }, {} as Record</* usage grant id */ string, /* metadata */ Record<string, unknown>>)),
+        });
+    }
+
+    private async _fetchData(path: string, serviceApiKey?: string, options: RequestInit = {}): Promise<any | null> {
         try {
-            const response = await fetch(this.enpoint + path);
+            const response = await fetch(this.enpoint + path, {
+                ...options,
+                headers: {
+                    ...options.headers,
+                    ...(serviceApiKey ? { 'X-Service-Api-Key': serviceApiKey } : null),
+                }
+            });
             if (response.status === 404) return null;
             if (!response.ok) throw new Error(`${response.status}: ${response.statusText}`);
             return await response.json();
