@@ -17,7 +17,12 @@ export interface ServiceRequest {
 }
 
 export interface GrantResponse {
+    /** App grant */
     app: string,
+    /**
+     * Map of service id -> service grant. Empty object if no service grants were requested / given.
+     * Service usage grants are not included here. They can be fetched via getServiceGrantInfo if needed.
+     */
     services: Record<string, string>,
 }
 
@@ -32,14 +37,18 @@ enum ResponseStatus {
 export interface AppInfo {
     id: string,
     displayName: string,
+    /** Whether TEN31 PASS provides a logo for this app */
     hasLogo: boolean,
+    /** The url where to redirect after redirect requests */
     redirect: string,
+    /** Whether to encode the redirect result in the url fragment or search query */
     fragment: boolean,
 }
 
 export interface ServiceInfo {
     id: string,
     displayName: string,
+    /** Whether TEN31 PASS provides a logo for this service */
     hasLogo: boolean,
     usages: Record</* service usage id */ string, ServiceUsageInfo>
 }
@@ -47,13 +56,17 @@ export interface ServiceInfo {
 export interface ServiceUsageInfo {
     id: string,
     displayName: string,
+    /** Whether TEN31 PASS provides a logo for this service usage */
     hasLogo: boolean,
+    /** A description, which can optionally contain placeholders for usage parameters */
     description?: string | null,
+    /** Names of expected usage parameters */
     fields: string[],
 }
 
 export interface AppGrantInfo {
     id: string,
+    /** Date string encoding the first usage time */
     timestamp: string,
     app: AppInfo,
     // note: user is nullable in AppGrantInfo type in the TEN31 PASS code but ensured to be set by getAppGrantInfo
@@ -63,23 +76,49 @@ export interface AppGrantInfo {
 export interface UserInfo {
     id: string,
     email: string,
+    /** User's name */
+    // note: Can also be the email address until name was provided during signup, however for us here it's always the
+    // user's name as grants can only be given after signup was completed.
     displayName: string,
+    /** Latest identification for latest user identity if not expired, or an empty list otherwise */
+    // note: By type in TEN31 PASS theoretically a list of all of the user's identifications, however what we're getting
+    // here via api by getUserInfo in TEN31 PASS is the latest identification for the latest identity if user provided
+    // these (completed signup which we can assume here, see above), it's been verified (expiry set, which we can also
+    // assume here as only verified users can give grants) and not expired, or an empty list otherwise.
     identifications: [IdentificationInfo?],
 }
 
 export interface IdentificationInfo {
+    /** The provider that performed the identification verification */
     provider: string,
+    /** Date string encoding the expiry time */
     expiry: string,
 }
 
 export interface ServiceGrantInfo {
     id: string,
+    /** Date string encoding the time when the service grant was created */
     timestamp: string,
+    /** Id of the service this grant is for */
     serviceId: string,
+    /** Id of the app that requested this service grant */
     appId: string,
+    /** JWT (JSON web token) representing the service grant */
+    // note: token is nullable in TEN31 PASS but only for an invalid config. We can assume here that TEN31 PASS is
+    // correctly configured.
     token: string,
+    /** Map of service usage id (instead of service usage grant id; by mistake?) -> usage parameters */
     usages: Record<string, UsageParameters>,
+    /**
+     * Consumed / used service usage grants.
+     * Map of service usage id (instead of service usage grant id; by mistake?) -> consumption metadata.
+     * Only available for requests that include the valid service api key of the service this grant is for.
+     */
     consumption?: Record<string, Record<string, unknown>>,
+    /**
+     * Info about the user who confirmed this service grant.
+     * Only available for requests that include the valid service api key of the service this grant is for.
+     */
     user?: UserInfo,
 }
 
@@ -136,6 +175,10 @@ export class Ten31PassApi {
         this._endpointOrigin = new URL(this.enpoint).origin;
     }
 
+    /**
+     * Open TEN31 PASS's signup page, either in a popup or by redirecting the page.
+     * Because we can not determine, whether a user signed up, this method returns void.
+     */
     signup(asPopup = true): void {
         const signupUrl = `${this.enpoint}signup`;
         if (asPopup) {
@@ -151,6 +194,10 @@ export class Ten31PassApi {
         }
     }
 
+    /**
+     * Request grants for an app and optional services. TEN31 PASS can be opened as a popup or by redirecting the page.
+     * For popups, the result is returned here; for redirects, the result can be checked via getRedirectGrantResponse.
+     */
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: true): Promise<GrantResponse>;
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: false): Promise<void>;
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: boolean): Promise<GrantResponse | void>;
@@ -211,24 +258,48 @@ export class Ten31PassApi {
         });
     }
 
+    /**
+     * Check for a GrantResponse received via redirect, for requests that redirected the page instead of using a popup.
+     */
     getRedirectGrantResponse(): GrantResponse | null {
         if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin) return null;
         if (redirectGrantResponse instanceof Error) throw redirectGrantResponse;
         return redirectGrantResponse;
     }
 
+    /**
+     * Fetch info about an app in the TEN31 PASS database.
+     * Deactivated apps are reported as null.
+     */
     async getAppInfo(appId: string): Promise<AppInfo | null> {
         return this._fetchData(`api/public/app/${appId}`);
     }
 
+    /**
+     * Fetch info about a service and associated supported service usages in the TEN31 PASS database.
+     * Deactivated services are reported as null. Deactivated service usages are omitted.
+     */
     async getServiceInfo(serviceId: string): Promise<ServiceInfo | null> {
         return this._fetchData(`api/public/service/${serviceId}`);
     }
 
+    /**
+     * Fetch info about an app grant and the associated app as well as the user who granted the app access.
+     * Expired / deactivated grants and grants for deactivated apps are reported as null.
+     */
     async getAppGrantInfo(appGrantId: string): Promise<AppGrantInfo | null> {
         return this._fetchData(`api/public/grant/app/${appGrantId}`);
     }
 
+    /**
+     * Fetch info about a service grant and the associated service usage grants and parameters.
+     * Grants for deactivated services are reported as null.
+     * Optionally, info about which usage grants have been consumed already and the associated consumption metadata as
+     * well as info about the user who granted the service access can be fetched by including the valid service api key
+     * of the service this grant is for. Invalid service api keys behave like not being submitted.
+     * When submitting the api key for your registered service, be sure that it can safely be used in your code without
+     * being leaked.
+     */
     async getServiceGrantInfo(serviceGrantId: string): Promise<Omit<ServiceGrantInfo, 'consumption' | 'user'> | null>
     async getServiceGrantInfo(serviceGrantId: string, serviceApiKey: string): Promise<ServiceGrantInfo | null>
     async getServiceGrantInfo(serviceGrantId: string, serviceApiKey?: string)
@@ -236,6 +307,15 @@ export class Ten31PassApi {
         return this._fetchData(`api/public/grant/service/${serviceGrantId}`, serviceApiKey);
     }
 
+    /**
+     * Consume service usage grants of a service grant, optionally adding arbitrary metadata like oasis contract id,
+     * swap addresses, etc.
+     * The call terminates with null, if the service grant's associated service is deactivated, and throws for invalid
+     * service api keys, usage grants not associated with the service grant identified by serviceGrantId, or if
+     * attempting to consume a usage grant which has already been consumed.
+     * When submitting the api key for your registered service, be sure that it can safely be used in your code without
+     * being leaked.
+     */
     async consumeServiceGrant(
         serviceGrantId: string,
         usageGrants: Array<{ usageGrantId: string, metadata?: Record<string, unknown> }>,
