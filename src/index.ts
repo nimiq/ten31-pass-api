@@ -125,6 +125,7 @@ export interface ServiceGrantInfo {
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
 // history.replaceState, and also to immediately remove the redirect response artifacts from the url.
 let redirectGrantResponse: GrantResponse | Error | null = null;
+let redirectGrantResponseAppId: string | null = null;
 for (let query of [location.search, location.hash]) {
     query = query.substring(1); // remove query ? or fragment #
     if (!query) continue;
@@ -137,6 +138,7 @@ for (let query of [location.search, location.hash]) {
     const serviceGrants: Record<string, string> = {}; // map of service id -> service grant id
     for (const [key, value] of parsedQuery) {
         if (key.startsWith('grant-for-app-')) {
+            redirectGrantResponseAppId = key.replace('grant-for-app-', '');
             appGrant = value;
         } else if (key.startsWith('grant-for-service-')) {
             serviceGrants[key.replace('grant-for-service-', '')] = value;
@@ -169,7 +171,15 @@ for (let query of [location.search, location.hash]) {
 }
 
 export class Ten31PassApi {
+    private static readonly STORAGE_KEY = 'ten31-pass';
     private readonly _endpointOrigin: string;
+
+    private static getRequestId(appId: string, serviceIds: string[] = []) {
+        // Calculate a request id from data that is available at request time as well as after redirect responses.
+        // Unfortunately this request id is not unique as all requests for the same app id and services will have the
+        // same request id.
+        return [appId, ...serviceIds.sort()].join('_');
+    }
 
     constructor(public readonly enpoint: Endpoint | string) {
         this._endpointOrigin = new URL(this.enpoint).origin;
@@ -199,10 +209,11 @@ export class Ten31PassApi {
      * For popups, the result is returned here; for redirects, the result can be checked via getRedirectGrantResponse.
      */
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: true): Promise<GrantResponse>;
-    async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: false): Promise<void>;
+    async requestGrants(appId: string, services: ServiceRequest[] | undefined, asPopup: false,
+        recoverableRedirectState?: any): Promise<void>;
     async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: boolean): Promise<GrantResponse | void>;
-    async requestGrants(appId: string, services: ServiceRequest[] = [], asPopup: boolean = true)
-        : Promise<GrantResponse | void> {
+    async requestGrants(appId: string, services: ServiceRequest[] = [], asPopup: boolean = true,
+        recoverableRedirectState?: any): Promise<GrantResponse | void> {
         // convert our more user-friendly request format into ten31's
         const request = {
             app: appId,
@@ -218,53 +229,69 @@ export class Ten31PassApi {
         };
 
         const popup = postRequest(`${this.enpoint}grants/request`, request, asPopup);
-        if (!popup) return; // redirect request
 
-        return new Promise<GrantResponse>((resolve, reject) => {
-            let closeCheckInterval = -1;
-            const onPopupMessage = (event: MessageEvent<unknown>) => {
-                if (event.origin !== this._endpointOrigin || !event.data || typeof event.data !== 'object'
-                    || (event.data as any).event !== 'grant-response') return;
-                const grantResponseMessage = event.data as (GrantResponse & { status: ResponseStatus.Success })
-                    | { status: Exclude<ResponseStatus, ResponseStatus.Success> };
-                // ignore unspecified errors (e.g. user got logged out or used wrong totp token) as user can try again.
-                if ([ResponseStatus.Error, ResponseStatus.Unknown].includes(grantResponseMessage.status)) return;
-                window.removeEventListener('message', onPopupMessage);
-                window.clearInterval(closeCheckInterval);
+        if (popup) {
+            // UI opened in popup. Listen for response.
+            return new Promise<GrantResponse>((resolve, reject) => {
+                let closeCheckInterval = -1;
+                const onPopupMessage = (event: MessageEvent<unknown>) => {
+                    if (event.origin !== this._endpointOrigin || !event.data || typeof event.data !== 'object'
+                        || (event.data as any).event !== 'grant-response') return;
+                    const grantResponseMessage = event.data as (GrantResponse & { status: ResponseStatus.Success })
+                        | { status: Exclude<ResponseStatus, ResponseStatus.Success> };
+                    // ignore unspecified errors (e.g. user got logged out or wrong totp token) as user can try again.
+                    if ([ResponseStatus.Error, ResponseStatus.Unknown].includes(grantResponseMessage.status)) return;
+                    window.removeEventListener('message', onPopupMessage);
+                    window.clearInterval(closeCheckInterval);
 
-                if (!grantResponseMessage.status
-                    || (grantResponseMessage.status === ResponseStatus.Success && !grantResponseMessage.app)) {
-                    // should never happen
-                    reject(new Error('TEN31 PASS did not return a valid response.'));
-                } else if (grantResponseMessage.status !== ResponseStatus.Success) {
-                    reject(new Error(`TEN31 PASS rejected grants with error: ${grantResponseMessage.status}`, {
-                        cause: new Error(grantResponseMessage.status),
-                    }));
-                } else {
-                    // only expose expected properties
-                    resolve({
-                        app: grantResponseMessage.app,
-                        services: grantResponseMessage.services || {},
-                    });
-                }
-            };
-            window.addEventListener('message', onPopupMessage);
-            closeCheckInterval = window.setInterval(() => {
-                if (!popup.closed) return;
-                window.removeEventListener('message', onPopupMessage);
-                window.clearInterval(closeCheckInterval);
-                reject(new Error('TEN31 PASS popup closed'));
-            }, 300);
-        });
+                    if (!grantResponseMessage.status
+                        || (grantResponseMessage.status === ResponseStatus.Success && !grantResponseMessage.app)) {
+                        // should never happen
+                        reject(new Error('TEN31 PASS did not return a valid response.'));
+                    } else if (grantResponseMessage.status !== ResponseStatus.Success) {
+                        reject(new Error(`TEN31 PASS rejected grants with error: ${grantResponseMessage.status}`, {
+                            cause: new Error(grantResponseMessage.status),
+                        }));
+                    } else {
+                        // only expose expected properties
+                        resolve({
+                            app: grantResponseMessage.app,
+                            services: grantResponseMessage.services || {},
+                        });
+                    }
+                };
+                window.addEventListener('message', onPopupMessage);
+                closeCheckInterval = window.setInterval(() => {
+                    if (!popup.closed) return;
+                    window.removeEventListener('message', onPopupMessage);
+                    window.clearInterval(closeCheckInterval);
+                    reject(new Error('TEN31 PASS popup closed'));
+                }, 300);
+            });
+        } else if (recoverableRedirectState) {
+            // Redirect request. Cache recoverable state if requested.
+            // This is still executed before the page redirects.
+            const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
+            window.sessionStorage[Ten31PassApi.STORAGE_KEY] = JSON.stringify({
+                ...JSON.parse(window.sessionStorage[Ten31PassApi.STORAGE_KEY] || 'null'),
+                [requestId]: recoverableRedirectState,
+            });
+        }
     }
 
     /**
      * Check for a GrantResponse received via redirect, for requests that redirected the page instead of using a popup.
      */
-    getRedirectGrantResponse(): GrantResponse | null {
-        if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin) return null;
+    getRedirectGrantResponse(): { response: GrantResponse, recoveredState: any | null } | null {
+        if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin || !redirectGrantResponse
+            || !redirectGrantResponseAppId) return null;
         if (redirectGrantResponse instanceof Error) throw redirectGrantResponse;
-        return redirectGrantResponse;
+        const requestId = Ten31PassApi.getRequestId(
+            redirectGrantResponseAppId,
+            Object.keys(redirectGrantResponse.services),
+        );
+        const recoveredState = JSON.parse(window.sessionStorage[Ten31PassApi.STORAGE_KEY] || '{}')[requestId] || null;
+        return { response: redirectGrantResponse, recoveredState };
     }
 
     /**
