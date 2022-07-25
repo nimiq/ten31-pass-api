@@ -172,6 +172,8 @@ for (let query of [location.search, location.hash]) {
 
 export class Ten31PassApi {
     private static readonly STORAGE_KEY = 'ten31-pass';
+
+    public readonly endpoint: Endpoint | string;
     private readonly _endpointOrigin: string;
 
     private static getRequestId(appId: string, serviceIds: string[] = []) {
@@ -181,8 +183,9 @@ export class Ten31PassApi {
         return [appId, ...serviceIds.sort()].join('_');
     }
 
-    constructor(public readonly enpoint: Endpoint | string) {
-        this._endpointOrigin = new URL(this.enpoint).origin;
+    constructor(endpoint: Endpoint | string) {
+        this.endpoint = endpoint.replace(/\/?$/, '/'); // make sure there is a trailing slash
+        this._endpointOrigin = new URL(this.endpoint).origin;
     }
 
     /**
@@ -190,7 +193,7 @@ export class Ten31PassApi {
      * Because we can not determine, whether a user signed up, this method returns void.
      */
     signup(asPopup = true): void {
-        const signupUrl = `${this.enpoint}signup`;
+        const signupUrl = `${this.endpoint}signup`;
         if (asPopup) {
             const popupName = `ten31-pass_${signupUrl}_${Date.now()}`;
             const popup = window.open(
@@ -228,7 +231,7 @@ export class Ten31PassApi {
             }, {} as Record</* service id */ string, Record</* usage id */ string, UsageParameters>>),
         };
 
-        const popup = postRequest(`${this.enpoint}grants/request`, request, asPopup);
+        const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
 
         if (popup) {
             // UI opened in popup. Listen for response.
@@ -364,7 +367,7 @@ export class Ten31PassApi {
 
     private async _fetchData(path: string, serviceApiKey?: string, options: RequestInit = {}): Promise<any | null> {
         try {
-            const response = await fetch(this.enpoint + path, {
+            const response = await fetch(this.endpoint + path, {
                 ...options,
                 headers: {
                     ...options.headers,
