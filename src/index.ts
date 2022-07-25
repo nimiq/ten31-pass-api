@@ -170,7 +170,7 @@ for (let query of [location.search, location.hash]) {
     break;
 }
 
-export class Ten31PassApi {
+export default class Ten31PassApi {
     private static readonly STORAGE_KEY = 'ten31-pass';
 
     public readonly endpoint: Endpoint | string;
