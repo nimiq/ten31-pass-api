@@ -16,6 +16,12 @@ export interface ServiceRequest {
     }>,
 }
 
+export enum ResponseType {
+    POST_MESSAGE = 'post-message',
+    REDIRECT = 'redirect',
+    IMMEDIATE_REDIRECT = 'immediate-redirect', // automatically and immediately redirect without showing success page
+}
+
 export interface GrantResponse {
     /** App grant */
     app: string,
@@ -209,14 +215,46 @@ export default class Ten31PassApi {
 
     /**
      * Request grants for an app and optional services. TEN31 PASS can be opened as a popup or by redirecting the page.
-     * For popups, the result is returned here; for redirects, the result can be checked via getRedirectGrantResponse.
+     * Popups can respond via postMessage in which case the result is returned here. For redirects, the result can be
+     * checked via getRedirectGrantResponse. Defaults to using a popup and preferredResponseType POST_MESSAGE.
+     * Note that the preferredResponseType can not be guaranteed. Availability of ResponseType...
+     * - POST_MESSAGE depends on whether JavaScript and window.opener are available on TEN31 Pass.
+     * - IMMEDIATE_REDIRECT depends on whether Javascript is available on TEN31 Pass.
+     * If preferredResponseType is not available, the fallback is ResponseType.REDIRECT which is always available.
+     * On fallback to ResponseType.REDIRECT, the response must be checked via getRedirectGrantResponse.
+     *
+     * Usage of ResponseType.POST_MESSAGE even when not opening a popup is theoretically possible if the calling page
+     * itself is already a popup, but this is currently not encouraged by the api and the postMessage response needs to
+     * be checked manually by the page that opened the popup.
      */
-    async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: true): Promise<GrantResponse>;
-    async requestGrants(appId: string, services: ServiceRequest[] | undefined, asPopup: false,
-        recoverableRedirectState?: any): Promise<void>;
-    async requestGrants(appId: string, services?: ServiceRequest[], asPopup?: boolean): Promise<GrantResponse | void>;
-    async requestGrants(appId: string, services: ServiceRequest[] = [], asPopup: boolean = true,
-        recoverableRedirectState?: any): Promise<GrantResponse | void> {
+    async requestGrants(
+        appId: string,
+        services?: ServiceRequest[],
+        asPopup?: true,
+        preferredResponseType?: ResponseType.POST_MESSAGE, // asPopup: true is the only option that allows POST_MESSAGE
+        recoverableRedirectState?: any, // only used in case that ResponseType.REDIRECT was used as fallback
+    ): Promise<GrantResponse | void>; // void if ResponseType.REDIRECT was used as fallback
+    async requestGrants(
+        appId: string,
+        services?: ServiceRequest[],
+        asPopup?: false | boolean,
+        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>, // only options for asPopup: false
+        recoverableRedirectState?: any,
+    ): Promise<void>; // always void for non-popups or response types other than postMessage
+    async requestGrants( // generic definition for when asPopup or preferredResponseType are passed as variables
+        appId: string,
+        services?: ServiceRequest[],
+        asPopup?: boolean,
+        preferredResponseType?: ResponseType,
+        recoverableRedirectState?: any,
+    ) : Promise<GrantResponse | void>;
+    async requestGrants(
+        appId: string,
+        services: ServiceRequest[] = [],
+        asPopup: boolean = true,
+        preferredResponseType: ResponseType = asPopup ? ResponseType.POST_MESSAGE : ResponseType.REDIRECT,
+        recoverableRedirectState?: any,
+    ): Promise<GrantResponse | void> {
         // convert our more user-friendly request format into ten31's
         const request = {
             app: appId,
@@ -229,6 +267,7 @@ export default class Ten31PassApi {
                 }, {} as Record</* usage id */ string, UsageParameters>);
                 return convertedServices;
             }, {} as Record</* service id */ string, Record</* usage id */ string, UsageParameters>>),
+            preferred_response_type: preferredResponseType,
         };
 
         const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
