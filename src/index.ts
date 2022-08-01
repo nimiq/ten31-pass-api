@@ -3,7 +3,7 @@ import { postRequest } from './utils';
 export enum Endpoint {
     MAIN = 'https://pass.ten31.com/',
     TEST = 'https://test.pass.ten31.com/',
-    LOCAL = 'http://localhost:8080/',
+    LOCAL = 'http://localhost:8082/',
 }
 
 export type UsageParameters = Record<string, unknown>;
