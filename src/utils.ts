@@ -24,7 +24,7 @@ export function postRequest(url: string, data: Record<string, unknown>, asPopup 
             popupName,
             `left=${window.innerWidth / 2 - 400},top=75,width=800,height=850,location=yes`,
         );
-        if (!popup) throw new Error('TEN31 PASS popup failed to open.');
+        if (!popup) throw new Error('TEN31 Pass popup failed to open.');
 
     }
     document.body.appendChild(form);

@@ -43,7 +43,7 @@ enum ResponseStatus {
 export interface AppInfo {
     id: string,
     displayName: string,
-    /** Whether TEN31 PASS provides a logo for this app */
+    /** Whether TEN31 Pass provides a logo for this app */
     hasLogo: boolean,
     /** The url where to redirect after redirect requests */
     redirect: string,
@@ -54,7 +54,7 @@ export interface AppInfo {
 export interface ServiceInfo {
     id: string,
     displayName: string,
-    /** Whether TEN31 PASS provides a logo for this service */
+    /** Whether TEN31 Pass provides a logo for this service */
     hasLogo: boolean,
     usages: Record</* service usage id */ string, ServiceUsageInfo>
 }
@@ -62,7 +62,7 @@ export interface ServiceInfo {
 export interface ServiceUsageInfo {
     id: string,
     displayName: string,
-    /** Whether TEN31 PASS provides a logo for this service usage */
+    /** Whether TEN31 Pass provides a logo for this service usage */
     hasLogo: boolean,
     /** A description, which can optionally contain placeholders for usage parameters */
     description?: string | null,
@@ -75,7 +75,7 @@ export interface AppGrantInfo {
     /** Date string encoding the first usage time */
     timestamp: string,
     app: AppInfo,
-    // note: user is nullable in AppGrantInfo type in the TEN31 PASS code but ensured to be set by getAppGrantInfo
+    // note: user is nullable in AppGrantInfo type in the TEN31 Pass code but ensured to be set by getAppGrantInfo
     user: UserInfo,
 }
 
@@ -87,8 +87,8 @@ export interface UserInfo {
     // user's name as grants can only be given after signup was completed.
     displayName: string,
     /** Latest identification for latest user identity if not expired, or an empty list otherwise */
-    // note: By type in TEN31 PASS theoretically a list of all of the user's identifications, however what we're getting
-    // here via api by getUserInfo in TEN31 PASS is the latest identification for the latest identity if user provided
+    // note: By type in TEN31 Pass theoretically a list of all of the user's identifications, however what we're getting
+    // here via api by getUserInfo in TEN31 Pass is the latest identification for the latest identity if user provided
     // these (completed signup which we can assume here, see above), it's been verified (expiry set, which we can also
     // assume here as only verified users can give grants) and not expired, or an empty list otherwise.
     identifications: [IdentificationInfo?],
@@ -110,7 +110,7 @@ export interface ServiceGrantInfo {
     /** Id of the app that requested this service grant */
     appId: string,
     /** JWT (JSON web token) representing the service grant */
-    // note: token is nullable in TEN31 PASS but only for an invalid config. We can assume here that TEN31 PASS is
+    // note: token is nullable in TEN31 Pass but only for an invalid config. We can assume here that TEN31 Pass is
     // correctly configured.
     token: string,
     /** Map of service usage id (instead of service usage grant id; by mistake?) -> usage parameters */
@@ -153,12 +153,12 @@ for (let query of [location.search, location.hash]) {
 
     if (!responseStatus || (responseStatus === ResponseStatus.Success && !appGrant)) {
         // should never happen
-        redirectGrantResponse = new Error('TEN31 PASS did not return a valid response.');
+        redirectGrantResponse = new Error('TEN31 Pass did not return a valid response.');
     } else if (responseStatus !== ResponseStatus.Success) {
         // Different to popup requests, reject on any kind of error because the user can not retry anymore after the
-        // redirect. With the current TEN31 PASS implementation however, redirects are only executed for successful
+        // redirect. With the current TEN31 Pass implementation however, redirects are only executed for successful
         // requests anyways.
-        redirectGrantResponse = new Error(`TEN31 PASS rejected grants with error: ${responseStatus}`, {
+        redirectGrantResponse = new Error(`TEN31 Pass rejected grants with error: ${responseStatus}`, {
             cause: new Error(responseStatus),
         });
     } else {
@@ -195,7 +195,7 @@ export default class Ten31PassApi {
     }
 
     /**
-     * Open TEN31 PASS's signup page, either in a popup or by redirecting the page.
+     * Open TEN31 Pass's signup page, either in a popup or by redirecting the page.
      * Because we can not determine, whether a user signed up, this method returns void.
      */
     signup(asPopup = true): void {
@@ -207,14 +207,14 @@ export default class Ten31PassApi {
                 popupName,
                 `left=${window.innerWidth / 2 - 400},top=75,width=800,height=850,location=yes`,
             );
-            if (!popup) throw new Error('TEN31 PASS popup failed to open.');
+            if (!popup) throw new Error('TEN31 Pass popup failed to open.');
         } else {
             window.location.assign(signupUrl);
         }
     }
 
     /**
-     * Request grants for an app and optional services. TEN31 PASS can be opened as a popup or by redirecting the page.
+     * Request grants for an app and optional services. TEN31 Pass can be opened as a popup or by redirecting the page.
      * Popups can respond via postMessage in which case the result is returned here. For redirects, the result can be
      * checked via getRedirectGrantResponse. Defaults to using a popup and preferredResponseType POST_MESSAGE.
      * Note that the preferredResponseType can not be guaranteed. Availability of ResponseType...
@@ -259,9 +259,9 @@ export default class Ten31PassApi {
         const request = {
             app: appId,
             services: services.reduce((convertedServices, { serviceId, usages }) => {
-                if (serviceId in convertedServices) throw new Error('TEN31 PASS request invalid');
+                if (serviceId in convertedServices) throw new Error('TEN31 Pass request invalid');
                 convertedServices[serviceId] = (usages || []).reduce((convertedUsages, { usageId, parameters }) => {
-                    if (usageId in convertedUsages) throw new Error('TEN31 PASS request invalid');
+                    if (usageId in convertedUsages) throw new Error('TEN31 Pass request invalid');
                     convertedUsages[usageId] = parameters || {};
                     return convertedUsages;
                 }, {} as Record</* usage id */ string, UsageParameters>);
@@ -289,9 +289,9 @@ export default class Ten31PassApi {
                     if (!grantResponseMessage.status
                         || (grantResponseMessage.status === ResponseStatus.Success && !grantResponseMessage.app)) {
                         // should never happen
-                        reject(new Error('TEN31 PASS did not return a valid response.'));
+                        reject(new Error('TEN31 Pass did not return a valid response.'));
                     } else if (grantResponseMessage.status !== ResponseStatus.Success) {
-                        reject(new Error(`TEN31 PASS rejected grants with error: ${grantResponseMessage.status}`, {
+                        reject(new Error(`TEN31 Pass rejected grants with error: ${grantResponseMessage.status}`, {
                             cause: new Error(grantResponseMessage.status),
                         }));
                     } else {
@@ -307,7 +307,7 @@ export default class Ten31PassApi {
                     if (!popup.closed) return;
                     window.removeEventListener('message', onPopupMessage);
                     window.clearInterval(closeCheckInterval);
-                    reject(new Error('TEN31 PASS popup closed'));
+                    reject(new Error('TEN31 Pass popup closed'));
                 }, 300);
             });
         } else if (recoverableRedirectState) {
@@ -337,7 +337,7 @@ export default class Ten31PassApi {
     }
 
     /**
-     * Fetch info about an app in the TEN31 PASS database.
+     * Fetch info about an app in the TEN31 Pass database.
      * Deactivated apps are reported as null.
      */
     async getAppInfo(appId: string): Promise<AppInfo | null> {
@@ -345,7 +345,7 @@ export default class Ten31PassApi {
     }
 
     /**
-     * Fetch info about a service and associated supported service usages in the TEN31 PASS database.
+     * Fetch info about a service and associated supported service usages in the TEN31 Pass database.
      * Deactivated services are reported as null. Deactivated service usages are omitted.
      */
     async getServiceInfo(serviceId: string): Promise<ServiceInfo | null> {
@@ -397,7 +397,7 @@ export default class Ten31PassApi {
             },
             // convert our more user-friendly request format into ten31's
             body: JSON.stringify(usageGrants.reduce((convertedUsageGrants, { usageGrantId, metadata }) => {
-                if (usageGrantId in convertedUsageGrants) throw new Error('TEN31 PASS request invalid');
+                if (usageGrantId in convertedUsageGrants) throw new Error('TEN31 Pass request invalid');
                 convertedUsageGrants[usageGrantId] = metadata || {};
                 return convertedUsageGrants;
             }, {} as Record</* usage grant id */ string, /* metadata */ Record<string, unknown>>)),
@@ -417,7 +417,7 @@ export default class Ten31PassApi {
             if (!response.ok) throw new Error(`${response.status}: ${response.statusText}`);
             return await response.json();
         } catch (e: any) {
-            throw new Error(`TEN31 PASS request to ${path} failed: ${e.message}`, { cause: e });
+            throw new Error(`TEN31 Pass request to ${path} failed: ${e.message}`, { cause: e });
         }
     }
 }
