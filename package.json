@@ -1,6 +1,6 @@
 {
   "name": "@nimiq/ten31-pass-api",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Library for communicating with the TEN31 Pass KYC service",
   "repository": "git@github.com:nimiq/ten31-pass-api.git",
   "author": "Nimiq (https://www.nimiq.com)",
