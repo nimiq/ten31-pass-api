@@ -128,6 +128,8 @@ export interface ServiceGrantInfo {
     user?: UserInfo,
 }
 
+const STORAGE_KEY = 'ten31-pass';
+
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
 // history.replaceState, and also to immediately remove the redirect response artifacts from the url.
 let redirectGrantResponse: GrantResponse | Error | null = null;
@@ -171,14 +173,30 @@ for (let query of [location.search, location.hash]) {
     // Remove redirect grant response from url; leave all other potential parameters as they are.
     // Using string replacements instead of parsedQuery.delete and then parsedQuery.toString to avoid format changes of
     // remaining parameters.
-    history.replaceState(history.state, '', window.location.href.replace(query,
-        query.replace(/(?:event|status|grant-for-(?:app|service)-[^=]+)=[^&]+&?/g, '').replace(/&$/, '')));
+    history.replaceState(
+        {
+            ...history.state,
+            [STORAGE_KEY]: {
+                redirectGrantResponse,
+                redirectGrantResponseAppId,
+            },
+        },
+        '',
+        window.location.href.replace(
+            query,
+            query.replace(/(?:event|status|grant-for-(?:app|service)-[^=]+)=[^&]+&?/g, '').replace(/&$/, ''),
+        ),
+    );
     break;
 }
 
-export default class Ten31PassApi {
-    private static readonly STORAGE_KEY = 'ten31-pass';
+// If we didn't find a grant response in the url, check history state for cached response after page reload.
+if (!redirectGrantResponse && !redirectGrantResponseAppId && history.state && history.state[STORAGE_KEY]) {
+    redirectGrantResponse = history.state[STORAGE_KEY].redirectGrantResponse || null;
+    redirectGrantResponseAppId = history.state[STORAGE_KEY].redirectGrantResponseAppId || null;
+}
 
+export default class Ten31PassApi {
     public readonly endpoint: Endpoint | string;
     private readonly _endpointOrigin: string;
 
@@ -314,8 +332,8 @@ export default class Ten31PassApi {
             // Redirect request. Cache recoverable state if requested.
             // This is still executed before the page redirects.
             const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
-            window.sessionStorage[Ten31PassApi.STORAGE_KEY] = JSON.stringify({
-                ...JSON.parse(window.sessionStorage[Ten31PassApi.STORAGE_KEY] || 'null'),
+            window.sessionStorage[STORAGE_KEY] = JSON.stringify({
+                ...JSON.parse(window.sessionStorage[STORAGE_KEY] || 'null'),
                 [requestId]: recoverableRedirectState,
             });
         }
@@ -332,7 +350,7 @@ export default class Ten31PassApi {
             redirectGrantResponseAppId,
             Object.keys(redirectGrantResponse.services),
         );
-        const recoveredState = JSON.parse(window.sessionStorage[Ten31PassApi.STORAGE_KEY] || '{}')[requestId] || null;
+        const recoveredState = JSON.parse(window.sessionStorage[STORAGE_KEY] || '{}')[requestId] || null;
         return { response: redirectGrantResponse, recoveredState };
     }
 
