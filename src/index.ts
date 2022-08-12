@@ -288,6 +288,16 @@ export default class Ten31PassApi {
             preferred_response_type: preferredResponseType,
         };
 
+        if (recoverableRedirectState) {
+            // Cache recoverable state if requested, regardless of opening a popup or redirecting, because also popups
+            // can respond via redirect if requested or as a fallback if no Javascript is available on TEN31 Pass.
+            const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
+            window.sessionStorage[STORAGE_KEY] = JSON.stringify({
+                ...JSON.parse(window.sessionStorage[STORAGE_KEY] || 'null'),
+                [requestId]: recoverableRedirectState,
+            });
+        }
+
         const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
 
         if (popup) {
@@ -327,14 +337,6 @@ export default class Ten31PassApi {
                     window.clearInterval(closeCheckInterval);
                     reject(new Error('TEN31 Pass popup closed'));
                 }, 300);
-            });
-        } else if (recoverableRedirectState) {
-            // Redirect request. Cache recoverable state if requested.
-            // This is still executed before the page redirects.
-            const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
-            window.sessionStorage[STORAGE_KEY] = JSON.stringify({
-                ...JSON.parse(window.sessionStorage[STORAGE_KEY] || 'null'),
-                [requestId]: recoverableRedirectState,
             });
         }
     }
