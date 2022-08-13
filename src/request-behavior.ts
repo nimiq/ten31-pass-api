@@ -45,6 +45,11 @@ export class RedirectBehavior {
             const parsedQuery = new URLSearchParams(query);
             if (parsedQuery.get('event') !== event) continue;
 
+            // Cleaned up query where we'll remove the redirect response but leave all other potential parameters as
+            // they are by using string replacements instead of parsedQuery.delete and then parsedQuery.toString to
+            // avoid format changes of remaining parameters.
+            let cleanedQuery = query.replace(/event=[^&]+&?/, '');
+
             // Read required and optional values
             const response: Record<string, string> = {};
             const expectedKeys = [...requiredKeys, ...optionalKeys];
@@ -56,9 +61,17 @@ export class RedirectBehavior {
                     }
                     response[key] = value;
                     missingRequiredKeys.delete(expectedKey);
+                    // Remove the entry from the cleaned query
+                    cleanedQuery = cleanedQuery.replace(new RegExp(
+                        // Turn string into regex by escaping regex special chars.
+                        `${key}=${value}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                        // Remove & between this and the following entry
+                        + '&?'
+                    ), '');
                     break;
                 }
             }
+            cleanedQuery = cleanedQuery.replace(/&$/, ''); // remove potential leftover trailing &
 
             if (!response.status || (response.status === ResponseStatus.Success && missingRequiredKeys.size)) {
                 throw new Error('TEN31 Pass did not return expected response.');
@@ -72,20 +85,7 @@ export class RedirectBehavior {
                 });
             }
 
-            // Cache response and remove redirect response from url; leave all other potential parameters as they are.
-            // Using string replacements instead of parsedQuery.delete and then parsedQuery.toString to avoid format
-            // changes of remaining parameters.
-            let newUrl = location.href.replace(/event=[^&]+&?/, '');
-            for (const key of expectedKeys) {
-                const keyValueRegexKeyPart = typeof key === 'string'
-                    // Turn string into regex by escaping regex special chars.
-                    ? key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                    // Remove unescaped ^ and & of regex. Not using negative look behind which is not supported on iOS.
-                    : key.source.replace(/(^|[^\\])[$^]/g, '$1');
-                const keyValueRegex = new RegExp(`${keyValueRegexKeyPart}=[^&]+&?`, 'g');
-                newUrl = newUrl.replace(keyValueRegex, '');
-            }
-            newUrl = newUrl.replace(/&$/, ''); // remove potential trailing &
+            // Cache response and set new url with removed redirect response
             history.replaceState(
                 {
                     ...history.state,
@@ -95,7 +95,7 @@ export class RedirectBehavior {
                     },
                 },
                 '',
-                newUrl,
+                location.href.replace(query, cleanedQuery),
             );
 
             return response;

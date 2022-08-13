@@ -123,7 +123,7 @@ export interface ServiceGrantInfo {
 
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
 // history.replaceState, and also to immediately remove the redirect response artifacts from the url.
-RedirectBehavior.getRedirectResponse('grant-response', [/^grant-for-app-[^=]+$/], [/^grant-for-service-[^=]+$/]);
+RedirectBehavior.getRedirectResponse('grant-response', [/^grant-for-app-.+$/], [/^grant-for-service-.+$/]);
 
 export default class Ten31PassApi {
     public readonly endpoint: Endpoint | string;
@@ -279,8 +279,8 @@ export default class Ten31PassApi {
     getRedirectGrantResponse(): { response: GrantResponse, recoveredState: any | null } | null {
         const redirectResponse = RedirectBehavior.getRedirectResponse(
             'grant-response',
-            [/^grant-for-app-[^=]+$/],
-            [/^grant-for-service-[^=]+$/],
+            [/^grant-for-app-.+$/],
+            [/^grant-for-service-.+$/],
             this._endpointOrigin,
         );
         if (!redirectResponse) return null;
