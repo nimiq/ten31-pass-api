@@ -1,4 +1,5 @@
 import { postRequest } from './utils';
+import { RedirectBehavior, ResponseStatus } from './request-behavior';
 
 export enum Endpoint {
     MAIN = 'https://pass.ten31.com/',
@@ -30,14 +31,6 @@ export interface GrantResponse {
      * Service usage grants are not included here. They can be fetched via getServiceGrantInfo if needed.
      */
     services: Record<string, string>,
-}
-
-// Not exported. Instead, we throw on errors.
-enum ResponseStatus {
-    Success = 'Success',
-    Error = 'Error',
-    InvalidRequest = 'InvalidRequest',
-    Unknown = 'Unknown',
 }
 
 export interface AppInfo {
@@ -128,77 +121,14 @@ export interface ServiceGrantInfo {
     user?: UserInfo,
 }
 
-const STORAGE_KEY = 'ten31-pass';
-
 // Check for redirect grant response. Do this immediately, before other code potentially changes the url, e.g. via
 // history.replaceState, and also to immediately remove the redirect response artifacts from the url.
-let redirectGrantResponse: GrantResponse | Error | null = null;
-let redirectGrantResponseAppId: string | null = null;
-for (let query of [location.search, location.hash]) {
-    query = query.substring(1); // remove query ? or fragment #
-    if (!query) continue;
-    const parsedQuery = new URLSearchParams(query);
-    if (parsedQuery.get('event') !== 'grant-response') continue;
-    const responseStatus = parsedQuery.get('status');
-
-    // Convert redirect response to GrantResponse
-    let appGrant: string | null = null;
-    const serviceGrants: Record<string, string> = {}; // map of service id -> service grant id
-    for (const [key, value] of parsedQuery) {
-        if (key.startsWith('grant-for-app-')) {
-            redirectGrantResponseAppId = key.replace('grant-for-app-', '');
-            appGrant = value;
-        } else if (key.startsWith('grant-for-service-')) {
-            serviceGrants[key.replace('grant-for-service-', '')] = value;
-        }
-    }
-
-    if (!responseStatus || (responseStatus === ResponseStatus.Success && !appGrant)) {
-        // should never happen
-        redirectGrantResponse = new Error('TEN31 Pass did not return a valid response.');
-    } else if (responseStatus !== ResponseStatus.Success) {
-        // Different to popup requests, reject on any kind of error because the user can not retry anymore after the
-        // redirect. With the current TEN31 Pass implementation however, redirects are only executed for successful
-        // requests anyways.
-        redirectGrantResponse = new Error(`TEN31 Pass rejected grants with error: ${responseStatus}`, {
-            cause: new Error(responseStatus),
-        });
-    } else {
-        redirectGrantResponse = {
-            app: appGrant!,
-            services: serviceGrants,
-        };
-    }
-
-    // Remove redirect grant response from url; leave all other potential parameters as they are.
-    // Using string replacements instead of parsedQuery.delete and then parsedQuery.toString to avoid format changes of
-    // remaining parameters.
-    history.replaceState(
-        {
-            ...history.state,
-            [STORAGE_KEY]: {
-                redirectGrantResponse,
-                redirectGrantResponseAppId,
-            },
-        },
-        '',
-        window.location.href.replace(
-            query,
-            query.replace(/(?:event|status|grant-for-(?:app|service)-[^=]+)=[^&]+&?/g, '').replace(/&$/, ''),
-        ),
-    );
-    break;
-}
-
-// If we didn't find a grant response in the url, check history state for cached response after page reload.
-if (!redirectGrantResponse && !redirectGrantResponseAppId && history.state && history.state[STORAGE_KEY]) {
-    redirectGrantResponse = history.state[STORAGE_KEY].redirectGrantResponse || null;
-    redirectGrantResponseAppId = history.state[STORAGE_KEY].redirectGrantResponseAppId || null;
-}
+RedirectBehavior.getRedirectResponse('grant-response', [/^grant-for-app-[^=]+$/], [/^grant-for-service-[^=]+$/]);
 
 export default class Ten31PassApi {
     public readonly endpoint: Endpoint | string;
     private readonly _endpointOrigin: string;
+    private readonly _redirectBehavior: RedirectBehavior;
 
     private static getRequestId(appId: string, serviceIds: string[] = []) {
         // Calculate a request id from data that is available at request time as well as after redirect responses.
@@ -208,13 +138,17 @@ export default class Ten31PassApi {
     }
 
     constructor(endpoint: Endpoint | string) {
-        this.endpoint = endpoint.replace(/\/?$/, '/'); // make sure there is a trailing slash
-        this._endpointOrigin = new URL(this.endpoint).origin;
+        endpoint = endpoint.replace(/\/?$/, '/'); // make sure there is a trailing slash
+        this.endpoint = endpoint;
+        this._endpointOrigin = new URL(endpoint).origin;
+        this._redirectBehavior = new RedirectBehavior(endpoint);
     }
 
     /**
      * Open TEN31 Pass's signup page, either in a popup or by redirecting the page.
      * Because we can not determine, whether a user signed up, this method returns void.
+     * This call does not support a recoverable redirect state, because TEN31 Pass does not redirect back from the
+     * signup flow.
      */
     signup(asPopup = true): void {
         const signupUrl = `${this.endpoint}signup`;
@@ -227,7 +161,7 @@ export default class Ten31PassApi {
             );
             if (!popup) throw new Error('TEN31 Pass popup failed to open.');
         } else {
-            window.location.assign(signupUrl);
+            this._redirectBehavior.call('signup');
         }
     }
 
@@ -292,16 +226,12 @@ export default class Ten31PassApi {
             // Cache recoverable state if requested, regardless of opening a popup or redirecting, because also popups
             // can respond via redirect if requested or as a fallback if no Javascript is available on TEN31 Pass.
             const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
-            window.sessionStorage[STORAGE_KEY] = JSON.stringify({
-                ...JSON.parse(window.sessionStorage[STORAGE_KEY] || 'null'),
-                [requestId]: recoverableRedirectState,
-            });
+            RedirectBehavior.setRecoverableState(requestId, recoverableRedirectState);
         }
 
-        const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
-
-        if (popup) {
-            // UI opened in popup. Listen for response.
+        if (asPopup) {
+            // Open in popup. Listen for response.
+            const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
             return new Promise<GrantResponse>((resolve, reject) => {
                 let closeCheckInterval = -1;
                 const onPopupMessage = (event: MessageEvent<unknown>) => {
@@ -338,6 +268,8 @@ export default class Ten31PassApi {
                     reject(new Error('TEN31 Pass popup closed'));
                 }, 300);
             });
+        } else {
+            this._redirectBehavior.call('grants/request', request);
         }
     }
 
@@ -345,15 +277,35 @@ export default class Ten31PassApi {
      * Check for a GrantResponse received via redirect, for requests that redirected the page instead of using a popup.
      */
     getRedirectGrantResponse(): { response: GrantResponse, recoveredState: any | null } | null {
-        if (!document.referrer || new URL(document.referrer).origin !== this._endpointOrigin || !redirectGrantResponse
-            || !redirectGrantResponseAppId) return null;
-        if (redirectGrantResponse instanceof Error) throw redirectGrantResponse;
-        const requestId = Ten31PassApi.getRequestId(
-            redirectGrantResponseAppId,
-            Object.keys(redirectGrantResponse.services),
+        const redirectResponse = RedirectBehavior.getRedirectResponse(
+            'grant-response',
+            [/^grant-for-app-[^=]+$/],
+            [/^grant-for-service-[^=]+$/],
+            this._endpointOrigin,
         );
-        const recoveredState = JSON.parse(window.sessionStorage[STORAGE_KEY] || '{}')[requestId] || null;
-        return { response: redirectGrantResponse, recoveredState };
+        if (!redirectResponse) return null;
+
+        // Convert redirect response to GrantResponse
+        let appId: string;
+        let appGrant: string;
+        const serviceGrants: Record<string, string> = {}; // map of service id -> service grant id
+        for (const [key, value] of Object.entries(redirectResponse)) {
+            if (key.startsWith('grant-for-app-')) {
+                appId = key.replace('grant-for-app-', '');
+                appGrant = value;
+            } else if (key.startsWith('grant-for-service-')) {
+                serviceGrants[key.replace('grant-for-service-', '')] = value;
+            }
+        }
+
+        // Recover state
+        const requestId = Ten31PassApi.getRequestId(appId!, Object.keys(serviceGrants));
+        const recoveredState = RedirectBehavior.getRecoverableState(requestId);
+
+        return {
+            response: { app: appGrant!, services: serviceGrants },
+            recoveredState,
+        };
     }
 
     /**
