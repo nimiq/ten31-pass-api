@@ -1,7 +1,13 @@
 // Similar in spirit to Nimiq Hub's request behaviors but different in implementation because the Hub's request
 // behaviors are based on @nimiq/rpc which TEN31 Pass does not use.
 
-import { postRequest } from './utils';
+import { generateWindowName, postRequest } from './utils';
+
+export enum ResponseType {
+    POST_MESSAGE = 'post-message',
+    REDIRECT = 'redirect',
+    IMMEDIATE_REDIRECT = 'immediate-redirect', // automatically and immediately redirect without showing success page
+}
 
 // Only for internal use. To the outside, we throw errors.
 export enum ResponseStatus {
@@ -25,7 +31,7 @@ export class RedirectBehavior {
 
     static getRedirectResponse(
         event: string,
-        requiredKeys: Array<string | RegExp> = [], // Status always required, others only for status !== 'Success'
+        requiredKeys: Array<string | RegExp> = [], // status always required, others only for status === 'Success'
         optionalKeys: Array<string | RegExp> = [],
         origin?: string,
     ): Record<string, string> | null {
@@ -114,8 +120,11 @@ export class RedirectBehavior {
             RedirectBehavior.setRecoverableState(options.requestId, options.recoverableState);
         }
         const url = `${this.endpoint}${request}`;
-        if (data) {
-            postRequest(url, data, false);
+        if (data || options?.preferredResponseType) {
+            postRequest(url, {
+                ...data,
+                ...(options?.preferredResponseType ? { preferred_response_type: options.preferredResponseType } : null),
+            });
         } else {
             window.location.assign(url);
         }
@@ -123,8 +132,129 @@ export class RedirectBehavior {
 }
 
 namespace RedirectBehavior {
-    export type RequestOptions = {} | {
+    export type RequestOptions = {
+        // The default is ResponseType.REDIRECT.
+        // Usage of ResponseType.POST_MESSAGE even for redirect requests is theoretically possible if the calling page
+        // itself is already a popup, but this is currently not encouraged by the api and the postMessage response would
+        // needed to be checked manually by the page that opened the popup.
+        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>,
+    } & RecoverStateOptions;
+
+    export type RecoverStateOptions = {} | {
         requestId: string,
         recoverableState: any,
     };
+}
+
+export class PopupBehavior {
+    private static createPopup(url: string): WindowProxy {
+        const popupName = generateWindowName(url);
+        const popup = window.open(
+            url,
+            popupName,
+            `left=${window.innerWidth / 2 - 400},top=75,width=800,height=850,location=yes`,
+        );
+        if (!popup) throw new Error('TEN31 Pass popup failed to open.');
+        return popup;
+    }
+
+    private readonly _endpointOrigin: string;
+
+    constructor(private endpoint: string) {
+        this._endpointOrigin = new URL(this.endpoint).origin;
+    }
+
+    call(
+        request: string,
+        data?: Record<string, unknown>,
+        options?: Exclude<PopupBehavior.RequestOptions<never>, { preferredResponseType: ResponseType.POST_MESSAGE }>,
+    ): void; // call without expecting a response (the default)
+    call<T extends object>(
+        request: string,
+        data: Record<string, unknown> | undefined,
+        options: Extract<PopupBehavior.RequestOptions<T>, { preferredResponseType: ResponseType.POST_MESSAGE }>,
+    ): Promise<T>; // call expecting a response via post message
+    call<T extends object>(
+        request: string,
+        data: Record<string, unknown> | undefined,
+        options?: PopupBehavior.RequestOptions<T>,
+    ): Promise<T> | void {
+        if (options && 'recoverableState' in options) {
+            // Cache recoverable state if requested, regardless of popup and preferred response type because also popups
+            // can respond via redirect if requested or as a fallback if no Javascript is available on TEN31 Pass.
+            RedirectBehavior.setRecoverableState(options.requestId, options.recoverableState);
+        }
+
+        const url = `${this.endpoint}${request}`;
+        const popup = PopupBehavior.createPopup(url);
+        if (data || options?.preferredResponseType) {
+            postRequest(url, {
+                ...data,
+                ...(options?.preferredResponseType ? { preferred_response_type: options.preferredResponseType } : null),
+            }, popup);
+        }
+
+        if (options?.preferredResponseType !== ResponseType.POST_MESSAGE) {
+            // not expecting a response
+            return;
+        }
+
+        return new Promise<T>((resolve, reject) => {
+            let closeCheckInterval = -1;
+            const onPopupMessage = (event: MessageEvent<unknown>) => {
+                if (event.origin !== this._endpointOrigin || !event.data || typeof event.data !== 'object'
+                    || (event.data as any).event !== options.responseEvent) return;
+                delete (event.data as any).event;
+                const responseMessage = event.data as PopupBehavior.ResponseMessage<T>;
+                if (options.responseFilter
+                    ? !options.responseFilter(responseMessage)
+                    // By default ignore unspecified errors (e.g. got logged out or wrong totp) as user can try again.
+                    : [ResponseStatus.Error, ResponseStatus.Unknown].includes(responseMessage.status)) {
+                    return;
+                }
+                window.removeEventListener('message', onPopupMessage);
+                window.clearInterval(closeCheckInterval);
+
+                if (!responseMessage.status
+                    || (responseMessage.status === ResponseStatus.Success && options.requiredKeys
+                        && options.requiredKeys.some((requiredKey) => typeof requiredKey === 'string'
+                            ? !(requiredKey in responseMessage)
+                            : !Object.keys(responseMessage).some((key) => key.match(requiredKey)?.[0] === key
+                )))) {
+                    reject(new Error('TEN31 Pass did not return expected response.'));
+                } else if (responseMessage.status !== ResponseStatus.Success) {
+                    reject(new Error(`TEN31 Pass rejected request with error: ${responseMessage.status}`, {
+                        cause: new Error(responseMessage.status),
+                    }));
+                } else {
+                    // only expose expected properties
+                    delete (responseMessage as Partial<typeof responseMessage>).status;
+                    resolve(responseMessage);
+                }
+            };
+
+            window.addEventListener('message', onPopupMessage);
+            closeCheckInterval = window.setInterval(() => {
+                if (!popup.closed) return;
+                window.removeEventListener('message', onPopupMessage);
+                window.clearInterval(closeCheckInterval);
+                reject(new Error('TEN31 Pass popup closed'));
+            }, 300);
+        });
+    }
+}
+
+namespace PopupBehavior {
+    export type RequestOptions<T extends object> = ({
+        // not expecting a response (the default) either because there is none or we expect it as redirect response
+        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>,
+    } | {
+        preferredResponseType: ResponseType.POST_MESSAGE,
+        responseEvent: string,
+        responseFilter?: (responseMessage: ResponseMessage<T>) => boolean,
+        requiredKeys?: Array<string | RegExp>, // status always required, others only for status === 'Success'
+    }) & RedirectBehavior.RecoverStateOptions;
+
+    export type ResponseMessage<T extends object> = (T & { status: ResponseStatus.Success })
+        | { status: Exclude<ResponseStatus, ResponseStatus.Success> };
 }

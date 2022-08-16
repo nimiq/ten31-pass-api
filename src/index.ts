@@ -1,5 +1,6 @@
-import { postRequest } from './utils';
-import { RedirectBehavior, ResponseStatus } from './request-behavior';
+import { PopupBehavior, RedirectBehavior, ResponseType } from './request-behavior';
+
+export { ResponseType };
 
 export enum Endpoint {
     MAIN = 'https://pass.ten31.com/',
@@ -15,12 +16,6 @@ export interface ServiceRequest {
         usageId: string,
         parameters?: UsageParameters,
     }>,
-}
-
-export enum ResponseType {
-    POST_MESSAGE = 'post-message',
-    REDIRECT = 'redirect',
-    IMMEDIATE_REDIRECT = 'immediate-redirect', // automatically and immediately redirect without showing success page
 }
 
 export interface GrantResponse {
@@ -129,6 +124,7 @@ export default class Ten31PassApi {
     public readonly endpoint: Endpoint | string;
     private readonly _endpointOrigin: string;
     private readonly _redirectBehavior: RedirectBehavior;
+    private readonly _popupBehavior: PopupBehavior;
 
     private static getRequestId(appId: string, serviceIds: string[] = []) {
         // Calculate a request id from data that is available at request time as well as after redirect responses.
@@ -142,6 +138,7 @@ export default class Ten31PassApi {
         this.endpoint = endpoint;
         this._endpointOrigin = new URL(endpoint).origin;
         this._redirectBehavior = new RedirectBehavior(endpoint);
+        this._popupBehavior = new PopupBehavior(endpoint);
     }
 
     /**
@@ -151,15 +148,8 @@ export default class Ten31PassApi {
      * signup flow.
      */
     signup(asPopup = true): void {
-        const signupUrl = `${this.endpoint}signup`;
         if (asPopup) {
-            const popupName = `ten31-pass_${signupUrl}_${Date.now()}`;
-            const popup = window.open(
-                signupUrl,
-                popupName,
-                `left=${window.innerWidth / 2 - 400},top=75,width=800,height=850,location=yes`,
-            );
-            if (!popup) throw new Error('TEN31 Pass popup failed to open.');
+            this._popupBehavior.call('signup');
         } else {
             this._redirectBehavior.call('signup');
         }
@@ -173,40 +163,41 @@ export default class Ten31PassApi {
      * - POST_MESSAGE depends on whether JavaScript and window.opener are available on TEN31 Pass.
      * - IMMEDIATE_REDIRECT depends on whether Javascript is available on TEN31 Pass.
      * If preferredResponseType is not available, the fallback is ResponseType.REDIRECT which is always available.
-     * On fallback to ResponseType.REDIRECT, the response must be checked via getRedirectGrantResponse.
+     * On fallback to ResponseType.REDIRECT, popup requests for ResponseType.POST_MESSAGE will not resolve and the
+     * response must be checked via getRedirectGrantResponse in the popup after the popup redirects back.
      *
      * Usage of ResponseType.POST_MESSAGE even when not opening a popup is theoretically possible if the calling page
-     * itself is already a popup, but this is currently not encouraged by the api and the postMessage response needs to
-     * be checked manually by the page that opened the popup.
+     * itself is already a popup, but this is currently not encouraged by the api and the postMessage response would
+     * needed to be checked manually by the page that opened the popup.
      */
-    async requestGrants(
+    requestGrants(
         appId: string,
         services?: ServiceRequest[],
         asPopup?: true,
         preferredResponseType?: ResponseType.POST_MESSAGE, // asPopup: true is the only option that allows POST_MESSAGE
         recoverableRedirectState?: any, // only used in case that ResponseType.REDIRECT was used as fallback
-    ): Promise<GrantResponse | void>; // void if ResponseType.REDIRECT was used as fallback
-    async requestGrants(
+    ): Promise<GrantResponse>;
+    requestGrants(
         appId: string,
         services?: ServiceRequest[],
         asPopup?: false | boolean,
         preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>, // only options for asPopup: false
         recoverableRedirectState?: any,
-    ): Promise<void>; // always void for non-popups or response types other than postMessage
-    async requestGrants( // generic definition for when asPopup or preferredResponseType are passed as variables
+    ): void; // always void for non-popups or response types other than postMessage
+    requestGrants( // generic definition for when asPopup or preferredResponseType are passed as variables
         appId: string,
         services?: ServiceRequest[],
         asPopup?: boolean,
         preferredResponseType?: ResponseType,
         recoverableRedirectState?: any,
-    ) : Promise<GrantResponse | void>;
-    async requestGrants(
+    ): Promise<GrantResponse> | void;
+    requestGrants(
         appId: string,
         services: ServiceRequest[] = [],
         asPopup: boolean = true,
         preferredResponseType: ResponseType = asPopup ? ResponseType.POST_MESSAGE : ResponseType.REDIRECT,
         recoverableRedirectState?: any,
-    ): Promise<GrantResponse | void> {
+    ): Promise<GrantResponse> | void {
         // convert our more user-friendly request format into ten31's
         const request = {
             app: appId,
@@ -219,57 +210,34 @@ export default class Ten31PassApi {
                 }, {} as Record</* usage id */ string, UsageParameters>);
                 return convertedServices;
             }, {} as Record</* service id */ string, Record</* usage id */ string, UsageParameters>>),
-            preferred_response_type: preferredResponseType,
         };
 
-        if (recoverableRedirectState) {
-            // Cache recoverable state if requested, regardless of opening a popup or redirecting, because also popups
-            // can respond via redirect if requested or as a fallback if no Javascript is available on TEN31 Pass.
-            const requestId = Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId));
-            RedirectBehavior.setRecoverableState(requestId, recoverableRedirectState);
-        }
+        const recoverableStateOptions = recoverableRedirectState !== undefined ? {
+            requestId: Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId)),
+            recoverableState: recoverableRedirectState,
+        } : {};
 
         if (asPopup) {
-            // Open in popup. Listen for response.
-            const popup = postRequest(`${this.endpoint}grants/request`, request, asPopup);
-            return new Promise<GrantResponse>((resolve, reject) => {
-                let closeCheckInterval = -1;
-                const onPopupMessage = (event: MessageEvent<unknown>) => {
-                    if (event.origin !== this._endpointOrigin || !event.data || typeof event.data !== 'object'
-                        || (event.data as any).event !== 'grant-response') return;
-                    const grantResponseMessage = event.data as (GrantResponse & { status: ResponseStatus.Success })
-                        | { status: Exclude<ResponseStatus, ResponseStatus.Success> };
-                    // ignore unspecified errors (e.g. user got logged out or wrong totp token) as user can try again.
-                    if ([ResponseStatus.Error, ResponseStatus.Unknown].includes(grantResponseMessage.status)) return;
-                    window.removeEventListener('message', onPopupMessage);
-                    window.clearInterval(closeCheckInterval);
-
-                    if (!grantResponseMessage.status
-                        || (grantResponseMessage.status === ResponseStatus.Success && !grantResponseMessage.app)) {
-                        // should never happen
-                        reject(new Error('TEN31 Pass did not return a valid response.'));
-                    } else if (grantResponseMessage.status !== ResponseStatus.Success) {
-                        reject(new Error(`TEN31 Pass rejected grants with error: ${grantResponseMessage.status}`, {
-                            cause: new Error(grantResponseMessage.status),
-                        }));
-                    } else {
-                        // only expose expected properties
-                        resolve({
-                            app: grantResponseMessage.app,
-                            services: grantResponseMessage.services || {},
-                        });
-                    }
-                };
-                window.addEventListener('message', onPopupMessage);
-                closeCheckInterval = window.setInterval(() => {
-                    if (!popup.closed) return;
-                    window.removeEventListener('message', onPopupMessage);
-                    window.clearInterval(closeCheckInterval);
-                    reject(new Error('TEN31 Pass popup closed'));
-                }, 300);
-            });
+            if (preferredResponseType === ResponseType.POST_MESSAGE) {
+                // Returns the grant response promise
+                return this._popupBehavior.call<GrantResponse>('grants/request', request, {
+                    preferredResponseType,
+                    responseEvent: 'grant-response',
+                    requiredKeys: ['app'],
+                    ...recoverableStateOptions,
+                });
+            } else {
+                // Returns void
+                return this._popupBehavior.call('grants/request', request, {
+                    preferredResponseType,
+                    ...recoverableStateOptions,
+                });
+            }
         } else {
-            this._redirectBehavior.call('grants/request', request);
+            this._redirectBehavior.call('grants/request', request, {
+                preferredResponseType: preferredResponseType as Exclude<ResponseType, ResponseType.POST_MESSAGE>,
+                ...recoverableStateOptions,
+            });
         }
     }
 
