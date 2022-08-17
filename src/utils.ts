@@ -26,3 +26,7 @@ export function generateWindowName(url: string): string {
     return `ten31-pass_${url}_${Date.now()}`;
 }
 
+export function isIOS(): boolean {
+    // taken from @nimiq/utils/BrowserDetection
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+}

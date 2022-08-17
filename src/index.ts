@@ -1,4 +1,4 @@
-import { PopupBehavior, RedirectBehavior, ResponseType } from './request-behavior';
+import { RedirectBehavior, PopupBehavior, ResponseType } from './request-behavior';
 
 export { ResponseType };
 
@@ -176,11 +176,20 @@ export default class Ten31PassApi {
         asPopup?: true,
         preferredResponseType?: ResponseType.POST_MESSAGE, // asPopup: true is the only option that allows POST_MESSAGE
         recoverableRedirectState?: any, // only used in case that ResponseType.REDIRECT was used as fallback
-    ): Promise<GrantResponse>;
+        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+    ): Promise<GrantResponse>; // ResponseType.POST_MESSAGE is the only response type for which we get an async response
     requestGrants(
         appId: string,
         services?: ServiceRequest[],
-        asPopup?: false | boolean,
+        asPopup?: true,
+        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>,
+        recoverableRedirectState?: any,
+        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+    ): void; // always void for response types other than postMessage
+    requestGrants(
+        appId: string,
+        services?: ServiceRequest[],
+        asPopup?: boolean,
         preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>, // only options for asPopup: false
         recoverableRedirectState?: any,
     ): void; // always void for non-popups or response types other than postMessage
@@ -190,6 +199,7 @@ export default class Ten31PassApi {
         asPopup?: boolean,
         preferredResponseType?: ResponseType,
         recoverableRedirectState?: any,
+        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
     ): Promise<GrantResponse> | void;
     requestGrants(
         appId: string,
@@ -197,6 +207,7 @@ export default class Ten31PassApi {
         asPopup: boolean = true,
         preferredResponseType: ResponseType = asPopup ? ResponseType.POST_MESSAGE : ResponseType.REDIRECT,
         recoverableRedirectState?: any,
+        popupOverlay: PopupBehavior.OverlayOptions['overlay'] = true,
     ): Promise<GrantResponse> | void {
         // convert our more user-friendly request format into ten31's
         const request = {
@@ -225,12 +236,14 @@ export default class Ten31PassApi {
                     responseEvent: 'grant-response',
                     requiredKeys: ['app'],
                     ...recoverableStateOptions,
+                    overlay: popupOverlay,
                 });
             } else {
                 // Returns void
                 return this._popupBehavior.call('grants/request', request, {
                     preferredResponseType,
                     ...recoverableStateOptions,
+                    overlay: popupOverlay,
                 });
             }
         } else {

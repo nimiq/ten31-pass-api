@@ -1,7 +1,7 @@
 // Similar in spirit to Nimiq Hub's request behaviors but different in implementation because the Hub's request
 // behaviors are based on @nimiq/rpc which TEN31 Pass does not use.
 
-import { generateWindowName, postRequest } from './utils';
+import { generateWindowName, postRequest, isIOS } from './utils';
 
 export enum ResponseType {
     POST_MESSAGE = 'post-message',
@@ -17,7 +17,7 @@ export enum ResponseStatus {
     Unknown = 'Unknown',
 }
 
-export class RedirectBehavior {
+class RedirectBehavior {
     static getRecoverableState(requestId: string): any {
         return JSON.parse(window.sessionStorage[RedirectBehavior.STORAGE_KEY] || '{}')[requestId] || null;
     }
@@ -146,7 +146,7 @@ namespace RedirectBehavior {
     };
 }
 
-export class PopupBehavior {
+class PopupBehavior {
     private static createPopup(url: string): WindowProxy {
         const popupName = generateWindowName(url);
         const popup = window.open(
@@ -185,23 +185,59 @@ export class PopupBehavior {
             RedirectBehavior.setRecoverableState(options.requestId, options.recoverableState);
         }
 
-        const url = `${this.endpoint}${request}`;
-        const popup = PopupBehavior.createPopup(url);
-        if (data || options?.preferredResponseType) {
-            postRequest(url, {
-                ...data,
-                ...(options?.preferredResponseType ? { preferred_response_type: options.preferredResponseType } : null),
-            }, popup);
+        const requestUrl = `${this.endpoint}${request}`;
+        const requestData = data || options?.preferredResponseType ? {
+            ...data,
+            ...(options?.preferredResponseType ? { preferred_response_type: options.preferredResponseType } : null),
+        } : undefined;
+
+        let popup: WindowProxy = PopupBehavior.createPopup(requestUrl);
+        if (requestData) {
+            postRequest(requestUrl, requestData, popup);
+        }
+
+        let overlay: HTMLDivElement | undefined;
+        const overlayOptions: Parameters<this['appendPopupOverlay']>[2] = typeof options?.overlay === 'object'
+            ? options.overlay
+            : {};
+        if (options?.overlay) {
+            overlay = this.appendPopupOverlay(
+                /* onFocusRequested */ () => {
+                    if (isIOS()) {
+                        // iOS doesn't allow to focus the popup. We have to re-open it to bring it to the front.
+                        // We don't have to unregister our close check and post message listener because they
+                        // automatically work on the new popup.
+                        popup.close();
+                        popup = PopupBehavior.createPopup(requestUrl);
+                        if (requestData) {
+                            postRequest(requestUrl, requestData, popup);
+                        }
+                    } else {
+                        popup.focus();
+                    }
+                },
+                /* onCloseRequested */ () => popup.close(),
+                overlayOptions,
+            );
         }
 
         if (options?.preferredResponseType !== ResponseType.POST_MESSAGE) {
             // not expecting a response
+            if (overlay) {
+                // Remove overlay again once the popup has been closed
+                const closeCheckInterval = window.setInterval(() => {
+                    if (!popup.closed) return;
+                    window.clearInterval(closeCheckInterval);
+                    this.removeOverlay(overlay!);
+                }, 300);
+            }
             return;
         }
 
+        let closeCheckInterval = -1;
+        let onPopupMessage: (event: MessageEvent<unknown>) => void;
         return new Promise<T>((resolve, reject) => {
-            let closeCheckInterval = -1;
-            const onPopupMessage = (event: MessageEvent<unknown>) => {
+            onPopupMessage = (event: MessageEvent<unknown>) => {
                 if (event.origin !== this._endpointOrigin || !event.data || typeof event.data !== 'object'
                     || (event.data as any).event !== options.responseEvent) return;
                 delete (event.data as any).event;
@@ -212,8 +248,6 @@ export class PopupBehavior {
                     : [ResponseStatus.Error, ResponseStatus.Unknown].includes(responseMessage.status)) {
                     return;
                 }
-                window.removeEventListener('message', onPopupMessage);
-                window.clearInterval(closeCheckInterval);
 
                 if (!responseMessage.status
                     || (responseMessage.status === ResponseStatus.Success && options.requiredKeys
@@ -236,11 +270,121 @@ export class PopupBehavior {
             window.addEventListener('message', onPopupMessage);
             closeCheckInterval = window.setInterval(() => {
                 if (!popup.closed) return;
-                window.removeEventListener('message', onPopupMessage);
-                window.clearInterval(closeCheckInterval);
                 reject(new Error('TEN31 Pass popup closed'));
             }, 300);
+            overlayOptions.onCallbackError = reject;
+        }).finally(() => {
+            window.removeEventListener('message', onPopupMessage);
+            window.clearInterval(closeCheckInterval);
+            if (!overlay) return;
+            this.removeOverlay(overlay);
         });
+    }
+
+    appendPopupOverlay(
+        onFocusRequested: () => void,
+        onCloseRequested: () => void,
+        overlayOptions?: Exclude<PopupBehavior.OverlayOptions['overlay'], boolean> & {
+            onCallbackError?: (e: Error) => void,
+        },
+    ): HTMLDivElement {
+        // Similar to Nimiq Hub's PopupRequestBehavior
+
+        // Define DOM-method abstractions to allow better minification
+        const createElement = document.createElement.bind(document);
+        const appendChild = (node: Node, child: Node) => node.appendChild(child);
+
+        // Overlay background
+        const overlay = createElement('div');
+        overlay.id = 'ten31-pass-overlay'; // styles can be overwritten with css targeting this id
+        const overlayStyle = overlay.style;
+        overlayStyle.position = 'fixed';
+        overlayStyle.top = '0';
+        overlayStyle.right = '0';
+        overlayStyle.bottom = '0';
+        overlayStyle.left = '0';
+        overlayStyle.background = 'rgba(31, 35, 72, 0.8)';
+        overlayStyle.display = 'flex';
+        overlayStyle.flexDirection = 'column';
+        overlayStyle.alignItems = 'center';
+        overlayStyle.justifyContent = 'space-between';
+        overlayStyle.cursor = 'pointer';
+        overlayStyle.color = 'white';
+        overlayStyle.textAlign = 'center';
+        overlayStyle.opacity = '0';
+        overlayStyle.transition = 'opacity .6s ease';
+        overlayStyle.zIndex = '99999';
+        overlay.addEventListener('click', () => {
+            try {
+                onFocusRequested();
+            } catch (e: any) {
+                if (!overlayOptions?.onCallbackError) throw e;
+                overlayOptions.onCallbackError(e);
+            }
+        });
+
+        // Top flex spacer
+        appendChild(overlay, createElement('div'));
+
+        // Explainer text
+        const text = createElement('div');
+        text.className = 'text';
+        text.textContent = overlayOptions?.text
+            || 'A popup has been opened,\nclick anywhere to bring it back to the front.';
+        const textStyle = text.style;
+        textStyle.padding = '20px';
+        textStyle.fontFamily = 'Muli, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, '
+            + 'Cantarell, "Helvetica Neue", sans-serif';
+        textStyle.fontSize = '24px';
+        textStyle.fontWeight = '600';
+        textStyle.lineHeight = '40px';
+        textStyle.whiteSpace = 'pre-line';
+        appendChild(overlay, text);
+
+        // Logo
+        const logo = createElement('img');
+        logo.className = 'logo';
+        logo.src = overlayOptions?.logo
+            || 'data:image/svg+xml,<svg width="150" height="30" viewBox="0 0 75 15" xmlns="http://www.w3.org/2000/svg"><path d="M1 .5H12v2.8H8v11.2H5.1V3.3H1V.5Zm21.5 0H14v14h8.4v-2.8h-5.6V8.9H21V6.1h-4.2V3.3h5.6V.5Zm46.1 0v2.8L66.8.5h-.9v4.2h.9V1.9l1.8 2.8h.8V.5h-.8Zm-5.1 0L65 4.7h-.9l-.3-.8H62l-.3.8H61L62.5.5h1Zm0 2.6L63 1.6l-.6 1.5h1.2Zm-3.3.5a1.1 1.1 0 0 1-1.1 1.1h-2V.5h1.7a1.1 1.1 0 0 1 .7 2 1.1 1.1 0 0 1 .7 1ZM58 2.2h.5a.6.6 0 0 0 .4-1 .6.6 0 0 0-.4 0H58v1Zm1.4 1.3a.6.6 0 0 0-.6-.6H58V4h.8a.6.6 0 0 0 .6-.6ZM74 .5H73L71.5 2V.5h-.8v4.2h.8V3.2l.4-.4L73 4.7h1l-1.6-2.5L74 .5ZM46 5.3 48.8.5h-9.6v2.8H44l-2.6 4.2h2.1c1.3 0 2.3 1 2.3 2.1 0 1.2-1 2.1-2.3 2.1-1 0-2.4-.6-3.5-1.8l-1.5 2.5a7.3 7.3 0 0 0 5 2.1 5 5 0 0 0 5-4.9A4.9 4.9 0 0 0 46 5.3ZM51.1.5l-1.7 2.8h2V12l2.8-4.7V.5h-3.1ZM32.4.5v8.6L27.2.5h-2.8v14h2.8V5.9l5.2 8.6h2.8V.5h-2.8Z" fill="white"/></svg>';
+        logo.style.marginBottom = '56px';
+        appendChild(overlay, logo);
+
+        // Close button
+        const button = createElement('div');
+        button.className = 'close';
+        const buttonStyle = button.style;
+        button.innerHTML = '&times;';
+        buttonStyle.position = 'absolute';
+        buttonStyle.top = '8px';
+        buttonStyle.right = '8px';
+        buttonStyle.fontSize = '24px';
+        buttonStyle.lineHeight = '32px';
+        buttonStyle.fontWeight = '600';
+        buttonStyle.width = '32px';
+        buttonStyle.height = '32px';
+        buttonStyle.opacity = '0.8';
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            try {
+                onCloseRequested();
+            } catch (e: any) {
+                if (!overlayOptions?.onCallbackError) throw e;
+                overlayOptions.onCallbackError(e);
+            }
+        });
+        appendChild(overlay, button);
+
+        // The 100ms delay is not just because the DOM element needs to be rendered before it
+        // can be animated, but also because it actually feels better when there is a short
+        // delay between the opening popup and the background fading.
+        setTimeout(() => overlay.style.opacity = '1', 100);
+
+        return appendChild(document.body, overlay) as HTMLDivElement;
+    }
+
+    private removeOverlay(overlay: HTMLDivElement): void {
+        overlay.style.opacity = '0';
+        setTimeout(() => document.body.removeChild(overlay), 400);
     }
 }
 
@@ -253,8 +397,17 @@ namespace PopupBehavior {
         responseEvent: string,
         responseFilter?: (responseMessage: ResponseMessage<T>) => boolean,
         requiredKeys?: Array<string | RegExp>, // status always required, others only for status === 'Success'
-    }) & RedirectBehavior.RecoverStateOptions;
+    }) & OverlayOptions & RedirectBehavior.RecoverStateOptions;
+
+    export interface OverlayOptions {
+        overlay?: boolean | {
+            text?: string,
+            logo?: string,
+        },
+    }
 
     export type ResponseMessage<T extends object> = (T & { status: ResponseStatus.Success })
         | { status: Exclude<ResponseStatus, ResponseStatus.Success> };
 }
+
+export { RedirectBehavior, PopupBehavior };
