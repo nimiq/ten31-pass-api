@@ -174,40 +174,54 @@ export default class Ten31PassApi {
         appId: string,
         services?: ServiceRequest[],
         asPopup?: true,
-        preferredResponseType?: ResponseType.POST_MESSAGE, // asPopup: true is the only option that allows POST_MESSAGE
-        recoverableRedirectState?: any, // only used in case that ResponseType.REDIRECT was used as fallback
-        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        options?: {
+            preferredResponseType?: ResponseType.POST_MESSAGE, // asPopup: true is only option that allows POST_MESSAGE
+            redirectRecoverableState?: any, // only used in case that ResponseType.REDIRECT is getting used as fallback
+            popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        },
     ): Promise<GrantResponse>; // ResponseType.POST_MESSAGE is the only response type for which we get an async response
     requestGrants(
         appId: string,
         services?: ServiceRequest[],
         asPopup?: true,
-        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>,
-        recoverableRedirectState?: any,
-        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        options?: {
+            preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>,
+            redirectRecoverableState?: any,
+            popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        },
     ): void; // always void for response types other than postMessage
     requestGrants(
         appId: string,
         services?: ServiceRequest[],
         asPopup?: boolean,
-        preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>, // only options for asPopup: false
-        recoverableRedirectState?: any,
+        options?: {
+            preferredResponseType?: Exclude<ResponseType, ResponseType.POST_MESSAGE>, // allowed also for asPopup: false
+            redirectRecoverableState?: any,
+        },
     ): void; // always void for non-popups or response types other than postMessage
     requestGrants( // generic definition for when asPopup or preferredResponseType are passed as variables
         appId: string,
         services?: ServiceRequest[],
         asPopup?: boolean,
-        preferredResponseType?: ResponseType,
-        recoverableRedirectState?: any,
-        popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        options?: {
+            preferredResponseType?: ResponseType,
+            redirectRecoverableState?: any,
+            popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        },
     ): Promise<GrantResponse> | void;
     requestGrants(
         appId: string,
         services: ServiceRequest[] = [],
         asPopup: boolean = true,
-        preferredResponseType: ResponseType = asPopup ? ResponseType.POST_MESSAGE : ResponseType.REDIRECT,
-        recoverableRedirectState?: any,
-        popupOverlay: PopupBehavior.OverlayOptions['overlay'] = true,
+        {
+            preferredResponseType = asPopup ? ResponseType.POST_MESSAGE : ResponseType.REDIRECT,
+            redirectRecoverableState,
+            popupOverlay = asPopup,
+        }: {
+            preferredResponseType?: ResponseType,
+            redirectRecoverableState?: any,
+            popupOverlay?: PopupBehavior.OverlayOptions['overlay'],
+        } = {},
     ): Promise<GrantResponse> | void {
         // convert our more user-friendly request format into ten31's
         const request = {
@@ -223,9 +237,9 @@ export default class Ten31PassApi {
             }, {} as Record</* service id */ string, Record</* usage id */ string, UsageParameters>>),
         };
 
-        const recoverableStateOptions = recoverableRedirectState !== undefined ? {
+        const recoverableStateOptions = redirectRecoverableState !== undefined ? {
             requestId: Ten31PassApi.getRequestId(appId, services.map(({ serviceId }) => serviceId)),
-            recoverableState: recoverableRedirectState,
+            recoverableState: redirectRecoverableState,
         } : {};
 
         if (asPopup) {
