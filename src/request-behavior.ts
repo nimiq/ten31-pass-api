@@ -191,6 +191,7 @@ class PopupBehavior {
             ...(options?.preferredResponseType ? { preferred_response_type: options.preferredResponseType } : null),
         } : undefined;
 
+        // Throws if popup fails to open. Note that the overlay is only appended later, if the popup could be opened.
         let popup: WindowProxy = PopupBehavior.createPopup(requestUrl);
         if (requestData) {
             postRequest(requestUrl, requestData, popup);
@@ -208,6 +209,10 @@ class PopupBehavior {
                         // We don't have to unregister our close check and post message listener because they
                         // automatically work on the new popup.
                         popup.close();
+                        // Note that we don't need to explicitly handle the popup failing to open: the request will be
+                        // rejected via closeCheckInterval by the old popup being closed, after which then also the
+                        // overlay gets removed, or it's directly removed by closeCheckInterval for the case that no
+                        // response is expected.
                         popup = PopupBehavior.createPopup(requestUrl);
                         if (requestData) {
                             postRequest(requestUrl, requestData, popup);
